@@ -123,6 +123,34 @@ func (c *Conn) ReloadOrTryRestartUnit(name string, mode string) (string, error) 
 	return c.runJob("org.freedesktop.systemd1.Manager.ReloadOrTryRestartUnit", name, mode)
 }
 
+// MaskUnit masks a unit to prevent it from ever starting. The second parameter
+// is present only for consistency with the other convenience methods here; it
+// has no effect.
+func (c *Conn) MaskUnit(name string, _ string) (string, error) {
+	changes, err := c.MaskUnitFiles([]string{name}, false, false)
+	if err != nil {
+		return "", err
+	}
+	if len(changes) < 1 {
+		return changes[0].Filename, nil
+	}
+	return "", nil
+}
+
+// UnmaskUnit unmasks a previously-masked unit. The second parameter is present
+// only for consistency with the other convenience methods here; it has no
+// effect.
+func (c *Conn) UnmaskUnit(name string, _ string) (string, error) {
+	changes, err := c.MaskUnitFiles([]string{name}, false, false)
+	if err != nil {
+		return "", err
+	}
+	if len(changes) < 1 {
+		return changes[0].Filename, nil
+	}
+	return "", nil
+}
+
 // StartTransientUnit() may be used to create and start a transient unit, which
 // will be released as soon as it is not running or referenced anymore or the
 // system is rebooted. name is the unit name including suffix, and must be
@@ -208,7 +236,7 @@ func (c *Conn) SetUnitProperties(name string, runtime bool, properties ...Proper
 }
 
 func (c *Conn) GetUnitTypeProperty(unit string, unitType string, propertyName string) (*Property, error) {
-	return c.getProperty(unit, "org.freedesktop.systemd1." + unitType, propertyName)
+	return c.getProperty(unit, "org.freedesktop.systemd1."+unitType, propertyName)
 }
 
 // ListUnits returns an array with all currently loaded units. Note that
@@ -254,6 +282,7 @@ type UnitStatus struct {
 }
 
 type LinkUnitFileChange EnableUnitFileChange
+type MaskUnitFileChange EnableUnitFileChange
 
 // LinkUnitFiles() links unit files (that are located outside of the
 // usual unit search paths) into the unit search path.
@@ -282,6 +311,46 @@ func (c *Conn) LinkUnitFiles(files []string, runtime bool, force bool) ([]LinkUn
 	}
 
 	changes := make([]LinkUnitFileChange, len(result))
+	changesInterface := make([]interface{}, len(changes))
+	for i := range changes {
+		changesInterface[i] = &changes[i]
+	}
+
+	err = dbus.Store(resultInterface, changesInterface...)
+	if err != nil {
+		return nil, err
+	}
+
+	return changes, nil
+}
+
+// MaskUnitFiles() masks unit files by symlinking /dev/null to a
+// location closer to the front of the unit search path.
+//
+// It takes a list of absolute paths to unit files to link and two
+// booleans. The first boolean controls whether the unit shall be
+// enabled for runtime only (true, /run), or persistently (false,
+// /etc).
+// The second controls whether symlinks pointing to other units shall
+// be replaced if necessary.
+//
+// This call returns a list of the changes made. The list consists of
+// structures with three strings: the type of the change (one of symlink
+// or unlink), the file name of the symlink and the destination of the
+// symlink.
+func (c *Conn) MaskUnitFiles(files []string, runtime bool, force bool) ([]MaskUnitFileChange, error) {
+	result := make([][]interface{}, 0)
+	err := c.sysobj.Call("org.freedesktop.systemd1.Manager.MaskUnitFiles", 0, files, runtime, force).Store(&result)
+	if err != nil {
+		return nil, err
+	}
+
+	resultInterface := make([]interface{}, len(result))
+	for i := range result {
+		resultInterface[i] = result[i]
+	}
+
+	changes := make([]MaskUnitFileChange, len(result))
 	changesInterface := make([]interface{}, len(changes))
 	for i := range changes {
 		changesInterface[i] = &changes[i]
@@ -343,6 +412,44 @@ type EnableUnitFileChange struct {
 	Type        string // Type of the change (one of symlink or unlink)
 	Filename    string // File name of the symlink
 	Destination string // Destination of the symlink
+}
+
+// UnmaskUnitFiles() unmasks masked unit files by removing symlinks to
+// /dev/null from the unit search path.
+//
+// It takes a list of unit files to unmask (either just file names or full
+// absolute paths if the unit files are residing outside the usual unit
+// search paths), and one boolean: whether the unit was masked for runtime
+// only (true, /run), or persistently (false, /etc).
+//
+// This call returns an array with the changes made. The changes list
+// consists of structures with three strings: the type of the change (one of
+// symlink or unlink), the file name of the symlink and the destination of the
+// symlink.
+func (c *Conn) UnmaskUnitFiles(files []string, runtime bool) ([]MaskUnitFileChange, error) {
+	result := make([][]interface{}, 0)
+	err := c.sysobj.Call("org.freedesktop.systemd1.Manager.UnmaskUnitFiles", 0, files, runtime).Store(&result)
+	if err != nil {
+		return nil, err
+	}
+
+	resultInterface := make([]interface{}, len(result))
+	for i := range result {
+		resultInterface[i] = result[i]
+	}
+
+	changes := make([]MaskUnitFileChange, len(result))
+	changesInterface := make([]interface{}, len(changes))
+	for i := range changes {
+		changesInterface[i] = &changes[i]
+	}
+
+	err = dbus.Store(resultInterface, changesInterface...)
+	if err != nil {
+		return nil, err
+	}
+
+	return changes, nil
 }
 
 // DisableUnitFiles() may be used to disable one or more units in the system (by
